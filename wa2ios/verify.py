@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from wa2ios.ios.backup import (
@@ -20,6 +21,53 @@ class _Checks:
         info(f"  [{'ok' if ok else 'FAIL'}] {what}")
         if not ok:
             self.failed.append(what)
+
+
+@dataclass(frozen=True)
+class FileMismatch:
+    relative_path: str
+    kind: str  # "fileID" | "size" | "missing"
+    detail: str
+
+    def describe(self) -> str:
+        return f"{self.relative_path}: {self.detail}"
+
+
+def find_whatsapp_mismatches(reader: BackupReader) -> list[FileMismatch]:
+    """Compare every WhatsApp file record in Manifest.db to the payload on disk."""
+    problems: list[FileMismatch] = []
+    for fid, rel, blob in reader.db.execute(
+        "SELECT fileID, relativePath, file FROM Files WHERE domain = ? AND flags = 1",
+        (WHATSAPP_DOMAIN,),
+    ):
+        expected = file_id(WHATSAPP_DOMAIN, rel)
+        if fid != expected:
+            problems.append(FileMismatch(
+                rel, "fileID",
+                f"fileID mismatch (index {fid}, expected {expected})",
+            ))
+            continue
+        payload = reader.payload(fid)
+        size = int(_mbfile(blob)[1]["Size"])
+        if payload.exists() and payload.stat().st_size != size:
+            actual = payload.stat().st_size
+            problems.append(FileMismatch(
+                rel, "size",
+                f"Size {size} in index, {actual} on disk",
+            ))
+        elif not payload.exists() and size > 0:
+            problems.append(FileMismatch(
+                rel, "missing",
+                f"missing on disk (index Size {size})",
+            ))
+    return problems
+
+
+def _report_mismatches(problems: list[FileMismatch], *, limit: int = 30) -> None:
+    for p in problems[:limit]:
+        info(f"    - {p.describe()}")
+    if len(problems) > limit:
+        info(f"    ... and {len(problems) - limit} more")
 
 
 def _count(db: sqlite3.Connection, sql: str, *args) -> int:
@@ -65,21 +113,14 @@ def verify_backup(patched: Path, *, baseline: Path, expected_added: int, new_pat
         c.check(new_files == base_files + expected_new_files,
                 f"file count: {base_files} original + {expected_new_files} media = {new_files}")
 
-        # Every file record in WhatsApp's domain must point at a payload of the recorded size.
-        bad = 0
-        for fid, rel, blob in mdb.execute(
-            "SELECT fileID, relativePath, file FROM Files WHERE domain = ? AND flags = 1", (WHATSAPP_DOMAIN,)
-        ):
-            if fid != file_id(WHATSAPP_DOMAIN, rel):
-                bad += 1
-                continue
-            payload = reader.payload(fid)
-            size = int(_mbfile(blob)[1]["Size"])
-            if payload.exists() and payload.stat().st_size != size:
-                bad += 1
-            elif not payload.exists() and size > 0:
-                bad += 1
-        c.check(bad == 0, "every WhatsApp file in the index matches its contents")
+        problems = find_whatsapp_mismatches(reader)
+        c.check(len(problems) == 0, "every WhatsApp file in the index matches its contents")
+        if problems:
+            _report_mismatches(problems)
+            size_only = all(p.kind == "size" for p in problems)
+            if size_only:
+                info("    Hint: re-run with --fix-manifest-sizes to rewrite those Size fields on the copy.")
+
         if new_paths:
             absent = sum(1 for p in new_paths if (reader.find(WHATSAPP_DOMAIN, p) or (0, 0))[1] != FLAG_FILE)
             c.check(absent == 0, f"all {len(new_paths)} added media files are indexed ({absent} missing)")

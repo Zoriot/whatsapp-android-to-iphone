@@ -152,6 +152,7 @@ them back.
 | Restore error mentioning Find My | Turn off Find My iPhone (step 6.1). |
 | The wa2ios copy doesn't appear in "Restore Backup" | Close and reopen Apple Devices. If it still doesn't appear, move the original backup folder out of `MobileSync\Backup` and rename the `…-wa2ios-…` folder to the original name (the part before `-wa2ios-`). |
 | Photos show as "📷 Photo" text | The file wasn't found on the PC. Check that `--media-dir` points at the `WhatsApp` folder that contains `Media`. |
+| `every WhatsApp file in the index matches its contents` | The source backup already has stale `Size` values in `Manifest.db` (common for WhatsApp SQLite files). Re-run with `--fix-manifest-sizes` (rewrites Size on the **copy** only; file contents are unchanged). |
 
 ## Privacy
 

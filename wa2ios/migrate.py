@@ -23,7 +23,7 @@ from wa2ios.ios.chatstorage import (
 )
 from wa2ios.model import FILE_KINDS, Chat, Kind, Message
 from wa2ios.util import Wa2iosError, android_ms_to_coredata, folder_size, free_space, human_size, info, step, warn
-from wa2ios.verify import verify_backup
+from wa2ios.verify import find_whatsapp_mismatches, verify_backup
 
 NATIVE_TYPE = {
     Kind.IMAGE: IOS_IMAGE, Kind.VIDEO: IOS_VIDEO, Kind.GIF: IOS_GIF, Kind.AUDIO: IOS_AUDIO,
@@ -54,6 +54,7 @@ class Options:
     output: Path | None = None
     dry_run: bool = False
     only_chats: list[str] = field(default_factory=list)
+    fix_manifest_sizes: bool = False  # rewrite stale Manifest Size fields on the copy only
 
 
 @dataclass
@@ -325,6 +326,22 @@ def run(opts: Options) -> Path | None:
     if source.has_whatsapp is False:
         raise Wa2iosError("This iPhone backup has no WhatsApp data. Install and activate WhatsApp on the iPhone first.")
 
+    scan = BackupReader(opts.backup)
+    try:
+        stale = [m for m in find_whatsapp_mismatches(scan) if m.kind == "size"]
+    finally:
+        scan.close()
+    if stale and not opts.fix_manifest_sizes:
+        warn(
+            f"This backup has {len(stale)} WhatsApp file(s) whose Manifest Size does not match the "
+            "on-disk payload. The post-migrate check will fail unless you pass --fix-manifest-sizes "
+            "(rewrites Size on the copy only; file contents are unchanged)."
+        )
+        for m in stale[:10]:
+            info(f"    - {m.describe()}")
+        if len(stale) > 10:
+            info(f"    ... and {len(stale) - 10} more")
+
     with tempfile.TemporaryDirectory(prefix="wa2ios-") as tmp:
         workdir = Path(tmp)
 
@@ -375,6 +392,10 @@ def run(opts: Options) -> Path | None:
                     patched.add_file(WHATSAPP_DOMAIN, f.backup_path, f.source)
                     if i % 500 == 0:
                         info(f"    {i}/{len(planner.pending)}")
+            if opts.fix_manifest_sizes:
+                step("Refreshing stale Manifest Size fields on the copy")
+                n = patched.fix_stale_sizes(WHATSAPP_DOMAIN)
+                info(f"  updated Size for {n} file(s)" if n else "  nothing to refresh")
             try:
                 patched.mark_as_newest()
             except Exception as e:  # cosmetic only

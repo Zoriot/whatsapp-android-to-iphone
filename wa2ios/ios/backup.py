@@ -353,6 +353,37 @@ class WritableBackup(BackupReader):
         self.added += 1
         self.added_bytes += size
 
+    def fix_stale_sizes(self, domain: str = WHATSAPP_DOMAIN) -> int:
+        """Rewrite Manifest Size fields that disagree with the on-disk payload.
+
+        File contents are not changed. Returns how many records were corrected.
+        Opt-in only: some iPhone backups ship with stale Size values for WhatsApp
+        SQLite databases, which makes the post-migrate integrity check fail.
+        """
+        fixed = 0
+        rows = list(self.db.execute(
+            "SELECT fileID, relativePath, file FROM Files WHERE domain = ? AND flags = ?",
+            (domain, FLAG_FILE),
+        ))
+        for fid, rel, blob in rows:
+            payload = self.payload(fid)
+            if not payload.is_file():
+                continue
+            try:
+                recorded = int(_mbfile(blob)[1]["Size"])
+            except (Wa2iosError, plistlib.InvalidFileException, KeyError, IndexError, TypeError):
+                continue
+            actual = payload.stat().st_size
+            if recorded == actual:
+                continue
+            self.db.execute(
+                "UPDATE Files SET file = ? WHERE fileID = ?",
+                (_resized_blob(blob, actual, self.now), fid),
+            )
+            fixed += 1
+            info(f"    {rel}: Size {recorded} -> {actual}")
+        return fixed
+
     def mark_as_newest(self) -> None:
         """Set Info.plist's date to now so the patched copy is the newest one listed in iTunes."""
         p = self.path / "Info.plist"

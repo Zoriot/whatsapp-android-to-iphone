@@ -87,6 +87,7 @@ def _migrate_options(a):
         output=Path(a.output) if a.output else None,
         dry_run=a.dry_run,
         only_chats=a.only or [],
+        fix_manifest_sizes=bool(getattr(a, "fix_manifest_sizes", False)),
     )
 
 
@@ -179,8 +180,13 @@ def cmd_wizard(a) -> int:
     chosen = backups[int(choice) - 1]
 
     step("Step 4/4: build the patched backup")
-    out = run(Options(msgstore=msgstore, backup=chosen.path, media_root=android_root if a.with_media else None,
-                      with_media=a.with_media))
+    out = run(Options(
+        msgstore=msgstore,
+        backup=chosen.path,
+        media_root=android_root if a.with_media else None,
+        with_media=a.with_media,
+        fix_manifest_sizes=a.fix_manifest_sizes,
+    ))
     if out:
         _print_next_steps(out)
     warn(f"When you are done, delete {msgstore} (your messages, decrypted) and {android_root} (your media).")
@@ -201,6 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--key", help="64-digit key (omit to be asked, which keeps it out of your shell history)")
     s.add_argument("--adb", help="path to adb.exe if it is not on PATH")
     s.add_argument("--with-media", action="store_true", help="also copy photos, videos, voice notes, documents")
+    s.add_argument(
+        "--fix-manifest-sizes",
+        action="store_true",
+        help="on the copy only, rewrite Manifest Size fields that do not match the on-disk WhatsApp files",
+    )
     s.set_defaults(func=cmd_wizard)
 
     s = sub.add_parser("pull", help="copy WhatsApp's backup (and media) off the Android phone via adb")
@@ -232,6 +243,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--only", nargs="+", metavar="CHAT", help="only these chats (phone number, group name, or JID)")
     s.add_argument("--output", help="where to write the patched backup (default: next to the original)")
     s.add_argument("--dry-run", action="store_true", help="rehearse and report, write nothing")
+    s.add_argument(
+        "--fix-manifest-sizes",
+        action="store_true",
+        help="on the copy only, rewrite Manifest Size fields that do not match the on-disk WhatsApp files "
+             "(needed when the source backup already has stale sizes)",
+    )
     s.add_argument("--chatstorage", help=argparse.SUPPRESS)  # advanced: patch a bare ChatStorage.sqlite
     s.add_argument("-y", "--yes", action="store_true")
     s.set_defaults(func=cmd_migrate)
